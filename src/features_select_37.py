@@ -37,37 +37,14 @@ Each stored npz file contains
 Parser and auxiliary functions
 """
 
-parser = argparse.ArgumentParser(description='Arg parser for features script.')
+class Experiment:
+    def __init__(self, ):
+        self.npy_path
+        self.learning_patj
+        self.inst_path = shared.INST_PATH
+        self.filename = 'air04_201610271_1200_120_10.npz'
 
-# Paths
-parser.add_argument(
-    '--npy_path',
-    type=str,
-    required=True,
-    help='Path to directory of npz files to be processed (usually */NPY).'
-)
-parser.add_argument(
-    '--learning_path',
-    type=str,
-    required=True,
-    help='Path to directory where data ready for learning will be saved.'
-)
-parser.add_argument(
-    '--inst_path',
-    type=str,
-    default=shared.INST_PATH,
-    help='Path to directory containing original instances. Can be set in shared.py.'
-)
-
-# Filename of generated data
-parser.add_argument(
-    '--filename',
-    type=str,
-    required=True,
-    help='Name for filename.npz to be saved with dataset of (features, label) pairs.'
-)
-
-ARGS = parser.parse_args()
+ARGS = Experiment(instance='app1-2.mps')
 
 
 """ Routines """

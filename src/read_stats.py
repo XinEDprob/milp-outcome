@@ -6,7 +6,7 @@ import glob
 import math
 from collections import OrderedDict
 
-from pandas.io.common import EmptyDataError
+from pandas.errors import EmptyDataError
 
 import shared
 import utilities
@@ -40,51 +40,16 @@ Run as
 Argparser definition 
 """
 
-parser = argparse.ArgumentParser(description='Arg parser for read_stats script.')
+class Experiment:
+    def __init__(self, seed=201610271, dataset='Benchmark78'):
+        self.stat_path = shared.DATA_PATH+'/STAT/'
+        self.data_path = shared.DATA_PATH
+        self.seed = seed
+        self.dataset = dataset
+        self.tls = [1200., 2400., 3600., 7200.]
+        self.rhos = [5, 10, 15, 20, 25]
 
-# Paths
-parser.add_argument(
-    '--stat_path',
-    type=str,
-    default=shared.DATA_PATH + '/STAT/',
-    help='Absolute path to stat archive.'
-)
-parser.add_argument(
-    '--data_path',
-    type=str,
-    default=shared.DATA_PATH,
-    help='Absolute path to data archive. Can be set within shared.py.'
-)
-
-# Specifications
-parser.add_argument(
-    '--seed',
-    type=int,
-    default=201610271,
-    help='Sets the solver random seed. Default is 201610271 (CPLEX version 12.7.1).'
-)
-parser.add_argument(
-    '--dataset',
-    type=str,
-    required=True,
-    help='Dataset of origin identifier for the MILP instance (e.g., Benchmark78).'
-)
-parser.add_argument(
-    '--tls',
-    type=float,
-    nargs='+',
-    default=[1200., 2400., 3600., 7200.],
-    help='List of TLs for which time stamps are gathered.'
-)
-parser.add_argument(
-    '--rhos',
-    type=float,
-    nargs='+',
-    default=[5, 10, 15, 20, 25],
-    help='List of RHOs for which time stamps are gathered.'
-)
-
-ARGS = parser.parse_args()
+ARGS = Experiment()
 
 
 """
@@ -147,22 +112,22 @@ if __name__ == "__main__":
     # columns of the .stat files
     cols = [
         "NAME", "SEED", "TIME_STAMP", "NODES", "ITCNT", "GAP",
-        "ELAPSED_SECS", "ELAPSED_TICKS", "B_CALLS",
-        "BEST_BOUND", "INCUMBENT", "OBJECTIVE",
+        "ELAPSED_SECS",
+        "BEST_BOUND",
         "STATUS", "SOL_TIME", "END_LINE"
     ]
 
     nan_dict = {
         "TIME_STAMP": "None", "NODES": "None", "ITCNT": "None", "GAP": "None",
-        "ELAPSED_SECS": "None", "ELAPSED_TICKS": "None",
-        "BEST_BOUND": "None", "INCUMBENT": "None", "OBJECTIVE": "None",
+        "ELAPSED_SECS": "None",
+        "BEST_BOUND": "None",
         "STATUS": "None", "SOL_TIME": "None", "END_LINE": "False"
     }
 
     # header of rho_dataset_seed.txt info file
     header = [
-        "NAME", "SEED", "RHO", "TL", "TAU", "NODES_TAU", "GAP_TAU", "B_CALLS_TAU", "LABEL", "TRIVIAL",
-        "GAP", "SOL_TIME", "NODES", "B_CALLS", "STATUS"
+        "NAME", "SEED", "RHO", "TL", "TAU", "NODES_TAU", "GAP_TAU", "LABEL", "TRIVIAL",
+        "GAP", "SOL_TIME", "NODES", "STATUS"
     ]
 
     #####################################
@@ -204,14 +169,14 @@ if __name__ == "__main__":
                 file_count_1 += 1
                 try:
                     df = pd.read_csv(stat_file, usecols=cols, header=0, sep='\t',
-                                     na_values=nan_dict, keep_default_na=False, false_values="False")
+                                     na_values=nan_dict, keep_default_na=False)
                 except EmptyDataError:
                     print(" !!! EmptyDataError on file: {}".format(stat_file))
                     count_empty_data += 1
                     continue
 
                 df['TIME_STAMP'] = df['TIME_STAMP'].apply(pd.to_numeric, errors='coerce')
-                df[['BEST_BOUND', 'INCUMBENT']] = df[['BEST_BOUND', 'INCUMBENT']].apply(pd.to_numeric, errors='coerce')
+                df['BEST_BOUND'] = df['BEST_BOUND'].apply(pd.to_numeric, errors='coerce')
                 df['STATUS'] = df['STATUS'].apply(pd.to_numeric, errors='coerce')
                 # print(df.dtypes)
 
@@ -221,12 +186,12 @@ if __name__ == "__main__":
                 seed = last['SEED'].values[0]
                 inst_info_str = name + '_' + str(seed)
 
-                tot_time = last['SOL_TIME'].values[0]  # corresponds to solution time, IF problem solved to optimality
+                tot_time = float(last['SOL_TIME'].values[0])  # corresponds to solution time, IF problem solved to optimality
                 status = last['STATUS'].values[0]
                 tot_nodes = last['NODES'].values[0]
-                tot_b_calls = last['B_CALLS'].values[0]
+                # tot_b_calls = last['B_CALLS'].values[0]
 
-                if math.isnan(df.iloc[-1]['SOL_TIME']):
+                if not df.iloc[-1]['SOL_TIME']:
                     print("\t{} Error raised: {}. Shape: {}".format(name, last['STATUS'].values[0], df.shape))
                     count_error_1 += 1  # comprises errors in single row as well
                     # NOTE: error instances are not discarded upfront.
@@ -237,7 +202,7 @@ if __name__ == "__main__":
 
                 # case 0: stat file contains only end_line
                 # need to differentiate depending on status
-                if (df.shape[0] == 1) and (status in [101, 102]):
+                if (df.shape[0] == 1):
                     # NOTE: in this case sol_time < smallest stamp,
                     # so label (=1) and trivial flag (=True) will be the same for all (tau, tl)
                     # with default parameters smallest stamp is 15 secs (i.e., 25% of 60 secs)
@@ -253,35 +218,35 @@ if __name__ == "__main__":
 
                         # NOTE: value of nodes, gap, b_calls at tau correspond with total ones (tau was not hit)
                         line = [
-                            name, seed, rho, tl, tau, tot_nodes, last['GAP'].values[0], tot_b_calls, 1, True,
-                            last['GAP'].values[0], tot_time, tot_nodes, tot_b_calls, status
+                            name, seed, rho, tl, tau, tot_nodes, last['GAP'].values[0], 1, True,
+                            last['GAP'].values[0], tot_time, tot_nodes, status
                         ]
 
                         for entry in line:
                             info_append.write("%s\t" % entry)
                         info_append.write("\n")
 
-                elif (df.shape[0] == 1) and not (status in [101, 102]):
-                    # case of instances stuck (at root), label and trivial flag will be 0 and False
-                    print("\t{} Shape of data is (1, -) with status {}".format(name, df.iloc[-1]['STATUS']))
-                    count_single_not_solved += 1
-                    for tau in taus:
-                        count_not_mapped += 1
-                        tl = tau / rho * 100
-                        # print(" ..processing (tau, tl): {} {}".format(tau, tl))
-                        #  "NAME", "SEED", "RHO", "TL", "TAU", "NODES_TAU", "GAP_TAU", "B_CALLS_TAU",
-                        #  "LABEL", "TRIVIAL",
-                        #  "GAP", "SOL_TIME", "NODES", "B_CALLS", "STATUS"
-
-                        # NOTE: value of nodes, gap, b_calls at tau correspond with total ones (tau was not hit)
-                        line = [
-                            name, seed, rho, tl, tau, tot_nodes, last['GAP'].values[0], tot_b_calls, 0, False,
-                            last['GAP'].values[0], tot_time, tot_nodes, tot_b_calls, status
-                        ]
-
-                        for entry in line:
-                            info_append.write("%s\t" % entry)
-                        info_append.write("\n")
+                # elif (df.shape[0] == 1) and not (status in [101, 102]):
+                #     # case of instances stuck (at root), label and trivial flag will be 0 and False
+                #     print("\t{} Shape of data is (1, -) with status {}".format(name, df.iloc[-1]['STATUS']))
+                #     count_single_not_solved += 1
+                #     for tau in taus:
+                #         count_not_mapped += 1
+                #         tl = tau / rho * 100
+                #         # print(" ..processing (tau, tl): {} {}".format(tau, tl))
+                #         #  "NAME", "SEED", "RHO", "TL", "TAU", "NODES_TAU", "GAP_TAU", "B_CALLS_TAU",
+                #         #  "LABEL", "TRIVIAL",
+                #         #  "GAP", "SOL_TIME", "NODES", "B_CALLS", "STATUS"
+                #
+                #         # NOTE: value of nodes, gap, b_calls at tau correspond with total ones (tau was not hit)
+                #         line = [
+                #             name, seed, rho, tl, tau, tot_nodes, last['GAP'].values[0], tot_b_calls, 0, False,
+                #             last['GAP'].values[0], tot_time, tot_nodes, tot_b_calls, status
+                #         ]
+                #
+                #         for entry in line:
+                #             info_append.write("%s\t" % entry)
+                #         info_append.write("\n")
 
                 # case 1: stat file contains multiple lines
                 elif df.shape[0] > 1:
@@ -312,13 +277,11 @@ if __name__ == "__main__":
                                 tau,
                                 tau_row['NODES'].values[0],
                                 tau_row['GAP'].values[0],
-                                tau_row['B_CALLS'].values[0],
                                 label,
                                 trivial,
                                 last['GAP'].values[0],
                                 tot_time,
                                 tot_nodes,
-                                tot_b_calls,
                                 status
                             ]
                             for entry in line:
@@ -331,8 +294,8 @@ if __name__ == "__main__":
                         else:
                             count_not_mapped += 1
                             line = [
-                                name, seed, rho, tl, tau, tot_nodes, last['GAP'].values[0], tot_b_calls, 1, True,
-                                last['GAP'].values[0], tot_time, tot_nodes, tot_b_calls, status
+                                name, seed, rho, tl, tau, tot_nodes, last['GAP'].values[0], 1, True,
+                                last['GAP'].values[0], tot_time, tot_nodes, status
                             ]
                             for entry in line:
                                 info_append.write("%s\t" % entry)
@@ -368,7 +331,7 @@ if __name__ == "__main__":
         file_count_2 += 1
         try:
             df = pd.read_csv(stat_file, usecols=cols, header=0, sep='\t',
-                             na_values=nan_dict, keep_default_na=False, false_values="False")
+                             na_values=nan_dict, keep_default_na=False)
         except EmptyDataError:
             print(" !!! EmptyDataError on file: {}".format(stat_file))
             count_empty_data += 1
@@ -402,7 +365,7 @@ if __name__ == "__main__":
 
             # case 0: stat file contains only end_line
             # need to differentiate depending on status
-            if (df.shape[0] == 1) and (last['STATUS'].values[0] in [101, 102]):
+            if (df.shape[0] == 1):
                 print("\t\t{} Shape of data is (1, -) with status {}".format(name, df.iloc[-1]['STATUS']))
                 count_single_row_solved += 1
                 for tau in taus:
@@ -410,14 +373,14 @@ if __name__ == "__main__":
                     # fill RHO_TAU_NODES[rho][tau] with None, because even the smallest stamp was not recorded
                     RHO_TAU_NODES[rho][tau] = [None] * 4
 
-            elif (df.shape[0] == 1) and not (last['STATUS'].values[0] in [101, 102]):
-                # case of instances stuck at root, label and trivial flag will be 0 and False
-                print("\t\t{} Shape of data is (1, -) with status {}".format(name, df.iloc[-1]['STATUS']))
-                count_single_not_solved += 1
-                for tau in taus:
-                    count_not_mapped += 1
-                    # fill RHO_TAU_NODES[rho][tau] with None, because even the smallest stamp was not recorded
-                    RHO_TAU_NODES[rho][tau] = [None] * 4
+            # elif (df.shape[0] == 1) and not (last['STATUS'].values[0] in [101, 102]):
+            #     # case of instances stuck at root, label and trivial flag will be 0 and False
+            #     print("\t\t{} Shape of data is (1, -) with status {}".format(name, df.iloc[-1]['STATUS']))
+            #     count_single_not_solved += 1
+            #     for tau in taus:
+            #         count_not_mapped += 1
+            #         # fill RHO_TAU_NODES[rho][tau] with None, because even the smallest stamp was not recorded
+            #         RHO_TAU_NODES[rho][tau] = [None] * 4
 
             # case 1: stat file contains multiple lines (i.e., some stamps were recorded)
             elif df.shape[0] > 1:

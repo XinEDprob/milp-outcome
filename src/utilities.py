@@ -31,22 +31,24 @@ def set_solver_full_run_parameters(c, info_str, dir_str, args):
         if not os.path.isdir(args.data_path + "/ERR/" + dir_str):
             raise
 
-    c.set_results_stream(os.path.join(args.data_path + '/RES/' + dir_str, info_str + '.res'))
-    c.set_log_stream(None)
-    c.set_warning_stream(None)
-    c.set_error_stream(os.path.join(args.data_path + '/ERR/' + dir_str, info_str + '.err'))
-
-    c.parameters.randomseed.set(args.seed)
+    c.setParam("ResultFile", os.path.join(args.data_path + '/RES/' + dir_str, info_str + '.sol'))
+    #     c.set_results_stream()
+    #     c.set_log_stream(None)
+    #     c.set_warning_stream(None)
+    #     c.set_error_stream(os.path.join(args.data_path + '/ERR/' + dir_str, info_str + '.err'))
+    c.setParam("Seed", args.seed)
+    #     c.parameters.randomseed.set(args.seed)
 
     # c.parameters.mip.interval.set(10)  # automatic, set interval for node log
-    c.parameters.mip.display.set(2)
+    #     c.parameters.mip.display.set(2)
 
     # node, time and memory limits
-    c.parameters.timelimit.set(args.time_limit)
-    c.parameters.mip.limits.treememory.set(10000)  # 10GB (10000 MB)
+    c.setParam("TimeLimit", args.time_limit)
+    #     c.parameters.timelimit.set(args.time_limit)
+    #     c.parameters.mip.limits.treememory.set(10000)  # 10GB (10000 MB)
 
     # presolve
-    c.parameters.preprocessing.presolve.set(1)  # default, apply presolve
+    #     c.parameters.preprocessing.presolve.set(1)  # default, apply presolve
 
     # probing at default
     # polishing is not invoked by default
@@ -54,16 +56,18 @@ def set_solver_full_run_parameters(c, info_str, dir_str, args):
     # cuts on
 
     # need to use traditional and sequential branch-and-cut to allow for control callbacks
-    c.parameters.mip.strategy.search.set(c.parameters.mip.strategy.search.values.traditional)
-    c.parameters.threads.set(1)
+    # TODO: what is the corresponding param in gurobi
+    #  c.parameters.mip.strategy.search.set(c.parameters.mip.strategy.search.values.traditional)
+    c.setParam("Threads", 1)
+    #     c.parameters.threads.set(1)
 
     try:
         os.mkdir(args.data_path + "/PAR/" + dir_str)
     except OSError:
         if not os.path.isdir(args.data_path + "/PAR/" + dir_str):
             raise
-
-    c.parameters.write_file(os.path.join(args.data_path + '/PAR/' + dir_str, info_str + '.par'))
+    c.write(os.path.join(args.data_path + '/PAR/' + dir_str, info_str + '.prm'))
+    #     c.parameters.write_file(os.path.join(args.data_path + '/PAR/' + dir_str, info_str + '.par'))
 
     return
 
@@ -79,23 +83,25 @@ def set_solver_data_run_parameters(c, args):
     NOTE2: node-limit is specified for data_run.
 
     """
-    c.set_results_stream(None)
-    c.set_log_stream(None)
-    c.set_warning_stream(None)
-    c.set_error_stream(None)
-
-    c.parameters.randomseed.set(args.seed)
+    # c.set_results_stream(None)
+    # c.set_log_stream(None)
+    # c.set_warning_stream(None)
+    # c.set_error_stream(None)
+    c.setParam("Seed", args.seed)
+    # c.parameters.randomseed.set(args.seed)
 
     # c.parameters.mip.interval.set(10)  # automatic, set interval for node log
-    c.parameters.mip.display.set(2)
+    # c.parameters.mip.display.set(2)
 
     # node, time and memory limits
-    c.parameters.timelimit.set(args.time_limit)
-    c.parameters.mip.limits.nodes.set(args.node_limit)  # sets the maximum number of nodes *solved* (processed)
-    c.parameters.mip.limits.treememory.set(10000)  # 10GB (10000 MB)
+    c.setParam("TimeLimit", args.time_limit)
+    # c.parameters.timelimit.set(args.time_limit)
+    c.setParam("NodeLimit", args.time_limit)
+    # c.parameters.mip.limits.nodes.set(args.node_limit)  # sets the maximum number of nodes *solved* (processed)
+    # c.parameters.mip.limits.treememory.set(10000)  # 10GB (10000 MB)
 
     # presolve
-    c.parameters.preprocessing.presolve.set(1)  # default, apply presolve
+    # c.parameters.preprocessing.presolve.set(1)  # default, apply presolve
 
     # probing at default
     # polishing is not invoked by default
@@ -103,8 +109,9 @@ def set_solver_data_run_parameters(c, args):
     # cuts on
 
     # need to use traditional and sequential branch-and-cut to allow for control callbacks
-    c.parameters.mip.strategy.search.set(c.parameters.mip.strategy.search.values.traditional)
-    c.parameters.threads.set(1)
+    # c.parameters.mip.strategy.search.set(c.parameters.mip.strategy.search.values.traditional)
+    c.setParam("Threads", 1)
+    # c.parameters.threads.set(1)
 
     return
 
