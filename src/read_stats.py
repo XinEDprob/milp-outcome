@@ -5,7 +5,7 @@ import numpy as np
 import glob
 import math
 from collections import OrderedDict
-
+import pickle
 from pandas.errors import EmptyDataError
 
 import shared
@@ -49,53 +49,13 @@ class Experiment:
         self.tls = [1200., 2400., 3600., 7200.]
         self.rhos = [5, 10, 15, 20, 25]
 
-ARGS = Experiment()
 
-
-"""
-Time limits and rho-stamps definition.
-"""
-
-TLs = ARGS.tls
-RHOs = ARGS.rhos
-
-TL_dict = {}
-for tl in TLs:
-    TL_dict[tl] = [rho * tl/100 for rho in RHOs]
-
-RHO_dict = {}
-for rho in RHOs:
-    RHO_dict[rho] = [rho * tl/100 for tl in TLs]
-
-STAMPS = [rho * tl/100 for rho in RHOs for tl in TLs]
-STAMPS.extend(TLs)
-STAMPS = list(set(STAMPS))  # remove duplicates and sort
-STAMPS.sort()
-
-ALL_STAMPS = []
-for k in STAMPS:
-    ALL_STAMPS.extend([k/100.*p for p in [25, 50, 75, 100]])
-
-ALL_STAMPS_U = list(set(ALL_STAMPS))
-ALL_STAMPS_U.sort()
-
-ALL_STAMPS_flags = OrderedDict()
-for t_stamp in ALL_STAMPS_U:
-    ALL_STAMPS_flags[t_stamp] = False
-
-# rho_tau_nodes data:
-# given rho, for all tau collects the # of nodes processed at {25, 50, 75}% of tau
-# nodes stamps will be used in data_run as markers for NodeCB
-
-RHO_TAU_NODES = OrderedDict()
-for rho in RHOs:
-    RHO_TAU_NODES[rho] = OrderedDict((tau, []) for tau in RHO_dict[rho])
-
-
-if __name__ == "__main__":
-
-    import pickle
-
+def run_read_stats(ARGS):
+    global TL_dict
+    global RHO_dict
+    global STAMPS
+    global ALL_STAMPS
+    global RHO_TAU_NODES
     dir_info_str = ARGS.dataset + '_' + str(ARGS.seed) + '/'
     stat_dir = ARGS.data_path + "/STAT/" + dir_info_str
 
@@ -422,3 +382,50 @@ if __name__ == "__main__":
     print("\nTotal processed stat files: {}".format(file_count_2))
     print("Errors instances: {}".format(count_error_2))
     print("Empty data cases: {}".format(count_empty_data))
+
+
+if __name__ == "__main__":
+
+    ARGS = Experiment()
+
+
+    """
+    Time limits and rho-stamps definition.
+    """
+
+    TLs = ARGS.tls
+    RHOs = ARGS.rhos
+
+    TL_dict = {}
+    for tl in TLs:
+        TL_dict[tl] = [rho * tl/100 for rho in RHOs]
+
+    RHO_dict = {}
+    for rho in RHOs:
+        RHO_dict[rho] = [rho * tl/100 for tl in TLs]
+
+    STAMPS = [rho * tl/100 for rho in RHOs for tl in TLs]
+    STAMPS.extend(TLs)
+    STAMPS = list(set(STAMPS))  # remove duplicates and sort
+    STAMPS.sort()
+
+    ALL_STAMPS = []
+    for k in STAMPS:
+        ALL_STAMPS.extend([k/100.*p for p in [25, 50, 75, 100]])
+
+    ALL_STAMPS_U = list(set(ALL_STAMPS))
+    ALL_STAMPS_U.sort()
+
+    ALL_STAMPS_flags = OrderedDict()
+    for t_stamp in ALL_STAMPS_U:
+        ALL_STAMPS_flags[t_stamp] = False
+
+    # rho_tau_nodes data:
+    # given rho, for all tau collects the # of nodes processed at {25, 50, 75}% of tau
+    # nodes stamps will be used in data_run as markers for NodeCB
+
+    RHO_TAU_NODES = OrderedDict()
+    for rho in RHOs:
+        RHO_TAU_NODES[rho] = OrderedDict((tau, []) for tau in RHO_dict[rho])
+
+    run_read_stats(ARGS)

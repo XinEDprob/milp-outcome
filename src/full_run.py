@@ -13,14 +13,12 @@ import shared
 import utilities
 from gurobipy import GRB, GurobiError
 import datetime
-
+import glob
 """ 
 Run (instance, seed) with single (longest specified) time limit (2h).
 Collect basic info on the run at predefined time stamps (tau, depending on tl and rho).
 Note: these are not the basic info that are used to build features, but will be used to define subsequent runs.
 
-It is not possible to control the invocation of MIPInfoCallback, hence
-basic stats on the run are collected via BranchCallback.
 
 Run as
 >>> python full_run.py --instance air04.mps.gz --dataset Benchmark78
@@ -47,63 +45,18 @@ class Experiment:
         self.data_path = shared.DATA_PATH
         self.inst_path = shared.INST_PATH
 
-ARGS = Experiment(instance='app1-2.mps')
 
 
 """
 Time limits and rho-stamps definition.
 """
 
-# TLs = [1200., 2400., 3600., 7200.]
-# RHOs = [5, 10, 15, 20, 25]
 
-# TLs = [1500., 6000.]
-# RHOs = [20]
-
-TLs = ARGS.tls
-RHOs = ARGS.rhos
-
-TL_dict = {}
-for tl in TLs:
-    TL_dict[tl] = [rho * tl/100 for rho in RHOs]
-
-RHO_dict = {}
-for rho in RHOs:
-    RHO_dict[rho] = [rho * tl/100 for tl in TLs]
-
-STAMPS = [rho * tl/100 for rho in RHOs for tl in TLs]
-STAMPS.extend(TLs)
-STAMPS = list(set(STAMPS))  # remove duplicates and sort
-STAMPS.sort()
-
-ALL_STAMPS = []
-for k in STAMPS:  # TLs are also considered
-    ALL_STAMPS.extend([k/100.*p for p in [25, 50, 75, 100]])
-
-ALL_STAMPS_U = list(set(ALL_STAMPS))
-ALL_STAMPS_U.sort()
-
-ALL_STAMPS_flags = OrderedDict()
-for t_stamp in ALL_STAMPS_U:
-    ALL_STAMPS_flags[t_stamp] = False
 
 
 """ 
 Callbacks definition.
 """
-
-
-# class MyEmptyNode(NodeCallback):
-#     """
-#     Empty callback. Custom subclass of NodeCallback.
-#     This callback will be used *before CPLEX enters a node*.
-#     """
-#     def __init__(self, env):
-#         NodeCallback.__init__(self, env)
-#         self.times_called = 0
-#
-#     def __call__(self):
-#         self.times_called += 1
 
 
 # callback function for gurobi
@@ -112,7 +65,7 @@ def mycallback(model, where):
     global stats_append
     global ALL_STAMPS_flags
     if where == GRB.Callback.MIP:
-        elapsed = model.cbGet(GRB.Callback.RUNTIME)
+        elapsed = round(model.cbGet(GRB.Callback.RUNTIME), 2)
         for stamp in ALL_STAMPS_flags.keys():
             if elapsed >= stamp and not ALL_STAMPS_flags[stamp]:
                 ALL_STAMPS_flags[stamp] = True  # might not be hit if stamp == timelimit
@@ -137,10 +90,11 @@ def mycallback(model, where):
                 break
 
 
+def run_full_run(ARGS):
 
-if __name__ == "__main__":
-
-
+    # global ARGS
+    global stats_append
+    global ALL_STAMPS_flags
 
     cwd = os.getcwd()
 
@@ -159,7 +113,7 @@ if __name__ == "__main__":
             raise
 
     os.chdir(ARGS.data_path + "/OUT/" + dir_info_str)
-    sys.stdout = open(inst_info_str + '.out', 'w')  # output file
+    # sys.stdout = open(inst_info_str + '.out', 'w')  # output file
 
     os.chdir(ARGS.inst_path)
     pb = gy.read(name)
@@ -243,3 +197,45 @@ if __name__ == "__main__":
 
         # pb.end()
     stats_append.close()
+
+if __name__ == "__main__":
+
+    os.chdir(shared.INST_PATH)
+    for inst in glob.glob('*.mps.gz'):
+        ARGS = Experiment(instance=inst)
+        # ARGS = Experiment(instance='b2c1s1.mps.gz')
+
+        # TLs = [1200., 2400., 3600., 7200.]
+        # RHOs = [5, 10, 15, 20, 25]
+
+        # TLs = [1500., 6000.]
+        # RHOs = [20]
+
+        TLs = ARGS.tls
+        RHOs = ARGS.rhos
+
+        TL_dict = {}
+        for tl in TLs:
+            TL_dict[tl] = [rho * tl/100 for rho in RHOs]
+
+        RHO_dict = {}
+        for rho in RHOs:
+            RHO_dict[rho] = [rho * tl/100 for tl in TLs]
+
+        STAMPS = [rho * tl/100 for rho in RHOs for tl in TLs]
+        STAMPS.extend(TLs)
+        STAMPS = list(set(STAMPS))  # remove duplicates and sort
+        STAMPS.sort()
+
+        ALL_STAMPS = []
+        for k in STAMPS:  # TLs are also considered
+            ALL_STAMPS.extend([k/100.*p for p in [25, 50, 75, 100]])
+
+        ALL_STAMPS_U = list(set(ALL_STAMPS))
+        ALL_STAMPS_U.sort()
+
+        ALL_STAMPS_flags = OrderedDict()
+        for t_stamp in ALL_STAMPS_U:
+            ALL_STAMPS_flags[t_stamp] = False
+
+        run_full_run(ARGS)

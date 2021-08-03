@@ -6,9 +6,14 @@ import sys
 import os
 import glob
 from collections import OrderedDict
-
+import gurobipy as gy
+from gurobipy import GRB, GurobiError
 import shared
-
+import time
+import os
+# import cplex
+import random
+import pickle
 """
 Process data collected with callbacks during (partial) B&B run (data_run) into a single array of features.
 Build a data point of (features, label).
@@ -38,14 +43,13 @@ Parser and auxiliary functions
 """
 
 class Experiment:
-    def __init__(self, ):
-        self.npy_path
-        self.learning_patj
-        self.inst_path = shared.INST_PATH
-        self.filename = 'air04_201610271_1200_120_10.npz'
+    def __init__(self, npy_path, learning_path, filename, inst_path=shared.INST_PATH):
+        self.npy_path = npy_path
+        self.learning_path = learning_path
+        self.inst_path = inst_path
+        self.filename = filename
 
-ARGS = Experiment(instance='app1-2.mps')
-
+eps = 1e-5
 
 """ Routines """
 
@@ -77,49 +81,12 @@ def primal_gap(best_sol, feas_sol):
         return abs(best_sol - feas_sol) / max([abs(best_sol), abs(feas_sol)])
 
 
-def get_chunks(node_df, branch_df):
-    """
-    Subdivision of BranchCB data (branch_df) in up to 4 chunks (using 25-50-75% of eta nodes)
-    Returns:
-        idx_split: global_cb_count splits for the chunks
-        chunk_num: number of *complete* chunks
-        num_nodes_list: list containing the number of processed nodes in each chunk
-    NOTE: last chunk might appear not completed in runs that solved before tau!
-    In general, this computations should be considered as approximations of the different phases.
-    """
-    idx_split = list(node_df['global_cb_count'].values)
-    idx_split.insert(0, branch_df.iloc[0]['global_cb_count'])  # add starting idx (1)
-
-    if len(idx_split) < 5:
-        chunk_num = len(idx_split) - 1  # less than 4 complete chunks, add last collected idx from branch_df (end)
-        idx_split.append(branch_df.iloc[-1]['global_cb_count'])
-    else:
-        chunk_num = 4  # no need to add idx for the end of the run
-
-    chunk_nodes_list = list()  # contains total # nodes processed at the end of each chunk
-    for i in range(len(idx_split) - 1):
-        tmp_df = branch_df.loc[(branch_df['global_cb_count'] > idx_split[i]) &
-                               (branch_df['global_cb_count'] <= idx_split[i + 1])]
-        # check if tmp_df is empty
-        if tmp_df.shape[0] == 0:
-            chunk_nodes_list.append(0)
-        else:
-            chunk_nodes_list.append(tmp_df.iloc[-1]['num_nodes'])
-
-    num_nodes_list = list()  # contains the deltas of nodes processed within each chunk
-    num_nodes_list.append(chunk_nodes_list[0])
-    for i in range(len(chunk_nodes_list) - 1):
-        num_nodes_list.append(chunk_nodes_list[i + 1] - chunk_nodes_list[i])
-
-    return idx_split, chunk_num, num_nodes_list
-
-
 """
 Selected features (37)
 """
 
 
-def get_37_features(branch_df, node_df, num_discrete_vars, num_all_vars):
+def get_37_features(branch_df, num_discrete_vars, num_all_vars):
     """
     :param branch_df:
     :param node_df:
@@ -127,75 +94,59 @@ def get_37_features(branch_df, node_df, num_discrete_vars, num_all_vars):
     :param num_all_vars:
     :return:
     """
-    last_branch = branch_df.iloc[-1]
-    last_node = node_df.iloc[-1]
+    global eps
+    # last_branch = branch_df.iloc[-1]
+    # last_node = node_df.iloc[-1]
+
+    mip_df = branch_df.loc[~branch_df.MIP_OBJBND.isnull()]
+    mipnode_df = branch_df.loc[~branch_df.MIPNODE_STATUS.isnull()]
+    mipsol_df = branch_df.loc[~branch_df.MIPSOL_OBJ.isnull()]
+
+    last_node = mipnode_df.iloc[-1]
 
     fts_list = []
 
-    # from last seen data (6)
-    ls7 = last_branch['gap']
-    ls12 = last_branch['best_bound'] / last_branch['best_integer'] \
-        if last_branch['best_integer'] and last_branch['best_bound'] else None
-    ls17 = last_node['num_nodes_at_max'] / float(last_node['open_nodes_len'])
-    ls18 = last_node['num_nodes_at_min'] / float(last_node['open_nodes_len'])
-    ls19 = last_node['open_nodes_max'] / float(last_branch['best_integer']) \
-        if last_branch['best_integer'] and last_node['open_nodes_max'] else None
-    ls20 = last_node['open_nodes_min'] / float(last_branch['best_integer']) \
-        if last_branch['best_integer'] and last_node['open_nodes_min'] else None
+    # first set of features: last observed global measure (2)
+    # gap
+    gap = primal_dual_gap(last_node['MIPNODE_OBJBND'], last_node['MIPNODE_OBJBST'])
+    # global bound ratio
+    # TODO: negative positive
+    bound_ratio = last_node['MIPNODE_OBJBST']/last_node['MIPNODE_OBJBND'] \
+        if last_node['MIPNODE_OBJBST'] and last_node['MIPNODE_OBJBND'] else None
 
-    fts_list.extend([ls7, ls12, ls17, ls18, ls19, ls20])
+    fts_list.extend([gap, bound_ratio])
 
-    # about pruned (2)
-    pruned = pd.Series(branch_df['num_nodes'].diff(1) - 1)  # correction!
-    cumulative = float(pruned.sum())
-    p2 = cumulative / branch_df['num_nodes'].iloc[-1] if branch_df['num_nodes'].iloc[-1] != 0 else None
-    p3 = cumulative / branch_df['nodes_left'].iloc[-1] if branch_df['nodes_left'].iloc[-1] != 0 else None
+    # second set of features: number of pruned nodes (2)
+    pruned = (mipnode_df['MIPNODE_NODCNT'].diff(1) - 1).dropna().tolist()  # correction!
+    cumulative = sum([item for item in pruned if item > 0])
+    p1 = cumulative / mipnode_df['MIPNODE_NODCNT'].iloc[-1] if branch_df['MIPNODE_NODCNT'].iloc[-1] != 0 else None
 
-    fts_list.extend([p2, p3])
-
-    # about nodes left (1)
-    left2 = branch_df.iloc[-1]['nodes_left'] / branch_df['nodes_left'].max()
-
-    fts_list.extend([left2])
-
-    # about iinf (4)
-    quantile_df = branch_df.loc[branch_df['iinf'] < branch_df['iinf'].quantile(.05)][['iinf', 'times_called']]
-    iinf1 = branch_df['iinf'].max() / float(num_discrete_vars)
-    iinf2 = branch_df['iinf'].min() / float(num_discrete_vars)
-    iinf3 = branch_df['iinf'].mean() / float(num_discrete_vars)
-    iinf5 = quantile_df.shape[0] / float(branch_df.times_called.max())
-
-    fts_list.extend([iinf1, iinf2, iinf3, iinf5])
-
-    # about itcnt (1)
-    itcnt1 = branch_df['itCnt'].iloc[-1] / branch_df['num_nodes'].iloc[-1] if branch_df['num_nodes'].iloc[-1] != 0 \
-        else None
-
-    fts_list.extend([itcnt1])
-
-    # about integer feasible (1)
-    if branch_df.loc[branch_df['has_incumbent'] == 1].shape[0] == 0:
-        feas2 = False
+    fts_list.extend([p1])
+    # TODO not a good indicator
+    if not mip_df['MIP_ITRCNT'].empty:
+        iterCNT = mip_df['MIP_ITRCNT'].iloc[-1]/mipnode_df['MIPNODE_NODCNT'].iloc[-1] if mip_df['MIP_ITRCNT'].iloc[-1] and \
+                    mipnode_df['MIPNODE_NODCNT'].iloc[-1] else None
     else:
-        first_inc_row = branch_df.loc[branch_df['has_incumbent'] == 1][
-            ['global_cb_count', 'times_called', 'is_integer_feasible', 'has_incumbent', 'depth']].iloc[0]
-        feas2 = True if \
-            (not first_inc_row['is_integer_feasible']) & (first_inc_row['has_incumbent']) \
-            else False
+        iterCNT = None
+    fts_list.extend([iterCNT])
 
-    fts_list.extend([feas2])
+    # third set of features: about iinf (4)
+    quantile_df = mipnode_df.loc[mipnode_df['MIPNODE_iif'] < mipnode_df['MIPNODE_iif'].quantile(.05)][['MIPNODE_iif', 'times_called']]
+    iinf1 = mipnode_df['MIPNODE_iif'].max() / float(num_discrete_vars)
+    iinf2 = mipnode_df['MIPNODE_iif'].min() / float(num_discrete_vars)
+    iinf3 = mipnode_df['MIPNODE_iif'].mean() / float(num_discrete_vars)
+    iinf4 = quantile_df.shape[0] / float(mipnode_df.times_called.max())
 
-    # needed depth data
-    w_t = branch_df['depth'].value_counts().to_dict()  # {i: width at depth i} for i in [0, d_t]
-    n_t = np.sum(list(w_t.values()))
+    fts_list.extend([iinf1, iinf2, iinf3, iinf4])
 
-    # about incumbent (4)
-    abs_improvement = pd.Series(abs(branch_df['best_integer'].diff(1)))
+
+    # forth set of features: about incumbent (4)
+    abs_improvement = pd.Series(abs(mipnode_df['MIPNODE_OBJBST'].diff(1).dropna()))
     bool_updates = pd.Series((abs_improvement != 0))
 
     num_updates = bool_updates.sum()  # real number of updates (could be 0)
-    inc2 = float(num_updates) / branch_df['num_nodes'].iloc[-1] if branch_df['num_nodes'].iloc[-1] != 0 else None
-    incA5 = abs_improvement.mean() / last_branch['best_integer'] if last_branch['best_integer'] else None
+    inc1 = float(num_updates) / mipnode_df['MIPNODE_NODCNT'].iloc[-1] if branch_df['MIPNODE_NODCNT'].iloc[-1] != 0 else None
+    inc2 = abs_improvement.mean() / mipnode_df['MIPNODE_OBJBST'].iloc[-1]  if mipnode_df['MIPNODE_OBJBST'].iloc[-1]  else None
 
     # add dummy 1 (update) at the end of bool_updates
     bool_updates[bool_updates.shape[0]] = 1.
@@ -206,24 +157,25 @@ def get_37_features(branch_df, node_df, num_discrete_vars, num_all_vars):
     zeros_to_last = zero_counts[-1]
     zero_counts = zero_counts[:-1]  # removes last count (to the end) to compute max, min, avg
     try:
-        inc9 = zero_counts.mean()
-        inc10 = zeros_to_last
+        inc3 = zero_counts.mean()
+        inc4 = zeros_to_last
     except ValueError:
-        inc9 = None
-        inc10 = None
-    incA9 = inc9 / n_t if inc9 and n_t else None
-    incA10 = inc10 / inc9 if inc9 else None
+        inc3 = None
+        inc4 = None
+    # TODO: think of a better denominator
+    incA3 = inc3 / mipnode_df['MIPNODE_NODCNT'].iloc[-1] if inc3 and mipnode_df['MIPNODE_NODCNT'].iloc[-1] else None
+    incA4 = inc4 / inc3 if inc3 else None
 
-    fts_list.extend([inc2, incA5, incA9, incA10])
+    fts_list.extend([inc1, inc2, incA3, incA4])
 
-    # about best bound (4)
-    abs_improvement = pd.Series(abs(branch_df['best_bound'].diff(1)))
+    # fifth set of features best bound (4)
+    abs_improvement = pd.Series(abs(mipnode_df['MIPNODE_OBJBND'].diff(1).dropna()))
     bool_updates = pd.Series((abs_improvement != 0))
     avg_improvement = abs_improvement.sum() / bool_updates.sum() if bool_updates.sum() != 0 else None
 
     num_updates = bool_updates.sum()  # real number of updates (could be 0)
-    bb2 = float(num_updates) / branch_df['num_nodes'].iloc[-1] if branch_df['num_nodes'].iloc[-1] != 0 else None
-    bbA5 = abs_improvement.mean() / last_branch['best_bound'] if last_branch['best_bound'] else None
+    bb1 = float(num_updates) / mipnode_df['MIPNODE_NODCNT'].iloc[-1] if mipnode_df['MIPNODE_NODCNT'].iloc[-1] != 0 else None
+    bb2 = abs_improvement.mean() / mipnode_df['MIPNODE_OBJBND'].iloc[-1]  if mipnode_df['MIPNODE_OBJBND'].iloc[-1]  else None
 
     # add dummy 1 (update) at the end of bool_updates
     bool_updates[bool_updates.shape[0]] = 1.
@@ -234,78 +186,52 @@ def get_37_features(branch_df, node_df, num_discrete_vars, num_all_vars):
     zeros_to_last = zero_counts[-1]
     zero_counts = zero_counts[:-1]  # removes last count (to the end) to compute max, min, avg
     try:
-        bb9 = zero_counts.mean()
-        bb10 = zeros_to_last
+        bb3 = zero_counts.mean()
+        bb4 = zeros_to_last
     except ValueError:
-        bb9 = None
-        bb10 = None
-    bbA9 = bb9 / n_t if bb9 and n_t else None
-    bbA10 = bb10 / bb9 if bb9 else None
+        bb3 = None
+        bb4 = None
+    bbA3 = bb3 / mipnode_df['MIPNODE_NODCNT'].iloc[-1] if bb3 and mipnode_df['MIPNODE_NODCNT'].iloc[-1] else None
+    bbA4 = bb4 / bb3 if bb3 else None
 
-    fts_list.extend([bb2, bbA5, bbA9, bbA10])
+    fts_list.extend([bb1, bb2, bbA3, bbA4])
 
-    # about objective (3)
-    quantile_df = branch_df.loc[branch_df['objective'] > branch_df['objective'].quantile(.95)][['objective',
+    # sixth set of features about objective (3)
+    feasible_obj = mipnode_df.query('MIPNODE_STATUS == 2')
+    quantile_df = feasible_obj.loc[feasible_obj['MIPNODE_relobj'] > feasible_obj['MIPNODE_relobj'].quantile(.95)][['MIPNODE_relobj',
                                                                                                 'times_called']]
-    obj3 = quantile_df.shape[0] / float(branch_df.times_called.max())
-    obj5 = abs(branch_df['objective'].quantile(0.95) - branch_df.iloc[-1]['best_integer'])
-    obj6 = abs(branch_df['objective'].quantile(0.95) - branch_df.iloc[-1]['best_bound'])
+    obj1 = quantile_df.shape[0] / float(mipnode_df.times_called.max())
+    obj2 = abs(mipnode_df['MIPNODE_relobj'].quantile(0.95) - mipnode_df.iloc[-1]['MIPNODE_OBJBST'])
+    obj3 = abs(mipnode_df['MIPNODE_relobj'].quantile(0.95) - mipnode_df.iloc[-1]['MIPNODE_OBJBND'])
 
-    fts_list.extend([obj3, obj5, obj6])
+    fts_list.extend([obj1, obj2, obj3])
 
-    # about fixed variables (4)
-    fix1 = branch_df['num_fixed_vars'].max() / float(num_all_vars)
-    fix2 = branch_df['num_fixed_vars'].min() / float(num_all_vars)
-    quantile_df = branch_df.loc[branch_df['num_fixed_vars'] >
-                                branch_df['num_fixed_vars'].quantile(.95)][['num_fixed_vars', 'times_called']]
-    fix4 = quantile_df.shape[0] / float(branch_df.times_called.max())
-    fix6 = (branch_df.times_called.max() - quantile_df.times_called.max()) / float(branch_df.times_called.max())
-
-    fts_list.extend([fix1, fix2, fix4, fix6])
-
-    # about depth (3)
-    d_t = branch_df['depth'].max()
-    w_t = branch_df['depth'].value_counts().to_dict()  # {i: width at depth i} for i in [0, d_t]
-    gamma_seq = {i: w_t.get(i + 1, 1) / float(w_t.get(i, 1)) for i in range(int(d_t))}  # (def 1 if not found)
-    try:
-        l_t = np.min([k for k, v in gamma_seq.items() if v < 2])
-    except ValueError:
-        l_t = 0
-    max_width = max(list(w_t.values()))
-    max_levels = [key for key, value in w_t.items() if value == max_width]
-    b_t = math.ceil((min(max_levels) + max(max_levels)) / 2)
-
-    depthA1 = d_t / last_branch['num_nodes']
-    depthA2 = l_t / d_t
-    depth5 = b_t/float(d_t) if float(d_t) != 0 else None
-
-    fts_list.extend([depthA1, depthA2, depth5])
-
-    # about dives (3)
-    depth_diff = pd.Series(branch_df['depth'].diff(1))
-    dive1 = depth_diff.max()
-    dive3 = depth_diff.mean()
-    depth_jump_idx = depth_diff.loc[depth_diff.abs() > 1].index
-    diveA4 = len(depth_jump_idx) / n_t
-
-    fts_list.extend([dive1, dive3, diveA4])
+    # seventh set of features about fixed variables (4)
+    # fix1 = mipnode_df['num_fixed_vars'].max() / float(num_all_vars)
+    # fix2 = mipnode_df['num_fixed_vars'].min() / float(num_all_vars)
+    # quantile_df = branch_df.loc[branch_df['num_fixed_vars'] >
+    #                             branch_df['num_fixed_vars'].quantile(.95)][['num_fixed_vars', 'times_called']]
+    # fix4 = quantile_df.shape[0] / float(branch_df.times_called.max())
+    # fix6 = (branch_df.times_called.max() - quantile_df.times_called.max()) / float(branch_df.times_called.max())
+    #
+    # fts_list.extend([fix1, fix2, fix4, fix6])
 
     # about integral (1)
-    total_time = branch_df.iloc[-1]['elapsed']
+    total_time = mipnode_df.iloc[-1]['times_called']
     # opt = float(miplib_df.loc[miplib_df['Name'] == inst_name]['Objective'])  # best known objective
 
     # copy part of branch_df
-    use_cols = ['elapsed', 'best_integer', 'best_bound']
-    copy_branch_df = branch_df[use_cols].copy()
-    copy_branch_df['inc_changes'] = abs(copy_branch_df['best_integer'].diff(1))
+    use_cols = ['times_called', 'MIPNODE_OBJBST', 'MIPNODE_OBJBND']
+    copy_branch_df = mipnode_df[use_cols].copy()
+    copy_branch_df['inc_changes'] = abs(copy_branch_df['MIPNODE_OBJBST'].diff(1))
     copy_branch_df['inc_bool'] = copy_branch_df['inc_changes'] != 0
-    copy_branch_df['bb_changes'] = abs(copy_branch_df['best_bound'].diff(1))
+    copy_branch_df['bb_changes'] = abs(copy_branch_df['MIPNODE_OBJBND'].diff(1))
     copy_branch_df['bb_bool'] = copy_branch_df['bb_changes'] != 0
 
     pd_dict = OrderedDict()  # {t_i: pd(t_i)} for t_i with incumbent change
     pd_dict[0] = 1
     for idx, row in copy_branch_df.loc[(copy_branch_df['inc_bool'] != 0) | (copy_branch_df['bb_bool'] != 0)].iterrows():
-        pd_dict[row['elapsed']] = primal_dual_gap(row['best_integer'], row['best_bound'])
+        pd_dict[row['times_called']] = primal_dual_gap(row['MIPNODE_OBJBST'], row['MIPNODE_OBJBND'])
     pd_dict[total_time] = None
 
     pd_times = list(pd_dict.keys())
@@ -331,7 +257,7 @@ def get_features_label(data_file, data_cols, num_discrete_vars, num_all_vars, nu
     :return: extract features vector for a single data-point from .npz data_file.
     """
     # data_file contains 'ft_matrix', 'label_time', 'label', 'name', 'seed', 'data_final_info' (and others)
-    loaded_file = np.load(data_file)
+    loaded_file = np.load(data_file, allow_pickle=True)
     loaded_data = loaded_file['ft_matrix']
 
     # check for empty data in is main loop (outside this function)
@@ -339,44 +265,41 @@ def get_features_label(data_file, data_cols, num_discrete_vars, num_all_vars, nu
     # define DataFrame from data
     all_df = pd.DataFrame(loaded_data, columns=data_cols)
     all_df.set_index(all_df['global_cb_count'].values, inplace=True)
-    branch_df = all_df.loc[~all_df['index'].isnull()]
-    node_df = all_df.loc[all_df['index'].isnull()]
+    # branch_df = all_df.loc[~all_df.index.isnull()]
+    # node_df = all_df.loc[all_df.index.isnull()]
 
-    idx_split, chunk_num, num_nodes_list = get_chunks(node_df, branch_df)
+    # idx_split, chunk_num, num_nodes_list = get_chunks(node_df, branch_df)
 
-    all_features = get_37_features(branch_df=branch_df, node_df=node_df,
+    all_features = get_37_features(branch_df=all_df,
                                    num_discrete_vars=num_discrete_vars, num_all_vars=num_all_vars)
     all_features.insert(0, float(loaded_file['label_time']))
-    all_features.insert(1, float(chunk_num))
-    all_features.append(float(loaded['label']))
+    # all_features.insert(1, float(chunk_num))
+    all_features.append(float(loaded_file['label']))
 
     print("Len of ft vector: {}".format(len(all_features)))
     return all_features
 
 
-if __name__ == "__main__":
-
-    import sys
-    import time
-    import os
-    import cplex
-    import random
-    import pickle
-
+def features_select_37(ARGS):
     src_dir = os.getcwd()
 
     """
     Callback data
     """
 
+    # COLS = [
+    #     'global_cb_count', 'times_called', 'get_time', 'get_dettime', 'elapsed', 'det_elapsed',
+    #     'index', 'parent_id', 'parent_index',
+    #     'node', 'nodes_left', 'objective', 'iinf', 'best_integer', 'best_bound', 'itCnt', 'gap',
+    #     'num_nodes', 'depth', 'num_fixed_vars', 'is_integer_feasible', 'has_incumbent',
+    #     'open_nodes_len', 'open_nodes_avg', 'open_nodes_min', 'open_nodes_max',
+    #     'num_nodes_at_min', 'num_nodes_at_max', 'num_cuts',
+    #     'cb_time', 'cb_dettime'
+    # ]
     COLS = [
-        'global_cb_count', 'times_called', 'get_time', 'get_dettime', 'elapsed', 'det_elapsed',
-        'index', 'parent_id', 'parent_index',
-        'node', 'nodes_left', 'objective', 'iinf', 'best_integer', 'best_bound', 'itCnt', 'gap',
-        'num_nodes', 'depth', 'num_fixed_vars', 'is_integer_feasible', 'has_incumbent',
-        'open_nodes_len', 'open_nodes_avg', 'open_nodes_min', 'open_nodes_max',
-        'num_nodes_at_min', 'num_nodes_at_max', 'num_cuts',
-        'cb_time', 'cb_dettime'
+        'global_cb_count', 'times_called', 'MIP_OBJBST', 'MIP_OBJBND', 'MIP_NODCNT', 'MIP_SOLCNT', 'MIP_CUTCNT',
+        'MIP_NODLFT', 'MIP_ITRCNT', 'MIPNODE_STATUS', 'MIPNODE_OBJBST', 'MIPNODE_OBJBND', 'MIPNODE_NODCNT',
+        'MIPNODE_SOLCNT', 'MIPNODE_iif', 'MIPNODE_relobj', 'MIPSOL_OBJ', 'MIPSOL_OBJBST', 'MIPSOL_OBJBND', 'MIPSOL_NODCNT', 'MIPSOL_SOLCNT'
     ]
 
     """
@@ -407,13 +330,13 @@ if __name__ == "__main__":
 
     os.chdir(src_dir)
     # save list_1 and list_2 for future reference
-    with open(os.path.join(ARGS.learning_path, '1_' + ARGS.filename.rstrip('.npz') + '_names.pkl'), 'wb') as f1:
-        pickle.dump(list_1, f1)
-    f1.close()
+    # with open(os.path.join(ARGS.learning_path, '1_' + ARGS.filename.rstrip('.npz') + '_names.pkl'), 'wb') as f1:
+    #     pickle.dump(list_1, f1)
+    # f1.close()
 
-    with open(os.path.join(ARGS.learning_path, '2_' +ARGS.filename.rstrip('.npz') + '_names.pkl'), 'wb') as f2:
-        pickle.dump(list_2, f2)
-    f2.close()
+    # with open(os.path.join(ARGS.learning_path, '2_' +ARGS.filename.rstrip('.npz') + '_names.pkl'), 'wb') as f2:
+    #     pickle.dump(list_2, f2)
+    # f2.close()
 
     print("Lengths of splits: {} {}".format(len(list_1), len(list_2)))
 
@@ -455,7 +378,7 @@ if __name__ == "__main__":
             count += 1
 
             # check if data in f is empty
-            loaded = np.load(f)  # contains 'ft_matrix', 'label_time', 'label', 'name', 'seed'
+            loaded = np.load(f, allow_pickle=True)  # contains 'ft_matrix', 'label_time', 'label', 'name', 'seed'
             data = loaded['ft_matrix']
             name = str(loaded['name'])  # w/o extension .mps.gz
             print("\n{} {} data type and shape: {} {}".format(count, name, data.dtype, data.shape))
@@ -467,16 +390,17 @@ if __name__ == "__main__":
 
             # read the instance to gather basic variables/constraints info
             os.chdir(ARGS.inst_path)
-            c = cplex.Cplex(name + '.mps.gz')
-            c.set_results_stream(None)
-            c.set_error_stream(None)
-            c.set_log_stream(None)
-            c.set_warning_stream(None)
+            c = gy.read(name + '.mps.gz')
+            # c = cplex.Cplex(name + '.mps.gz')
+            # c.set_results_stream(None)
+            # c.set_error_stream(None)
+            # c.set_log_stream(None)
+            # c.set_warning_stream(None)
 
-            num_discrete = c.variables.get_num_binary() + c.variables.get_num_integer()
-            num_vars = c.variables.get_num()
-            num_constr = c.linear_constraints.get_num()
-            c.end()
+            num_discrete = c.NumIntVars
+            num_vars = c.NumVars
+            num_constr = c.NumConstrs
+            # c.end()
             os.chdir(ARGS.npy_path)
 
             glob_list.append(np.asarray(get_features_label(
@@ -500,3 +424,25 @@ if __name__ == "__main__":
 
         os.chdir(ARGS.learning_path)
         np.savez(str(set_idx) + '_37_' + ARGS.filename, data=global_arr)
+
+
+if __name__ == "__main__":
+    data_path = shared.DATA_PATH
+    rhos = [5, 10, 15, 20, 25]
+    dataset = 'Benchmark78'
+    seed = '201610271'
+    name = 'bab5'
+    label_times = [1200., 2400., 3600., 7200.]
+    for rho in rhos:
+        for label_time in label_times:
+            tau = rho*label_time/100
+            print(f'process rho: {rho} and label_time: {label_time}')
+            npy_rho_dir = data_path + 'NPY_RHO_' + str(rho) + '/' + dataset + '_' + str(seed) + '/'
+            learning_path = data_path + 'LEARNING/'
+            filename = name + '_' + str(seed) + '_' + str(label_time) + '_' + str(tau) + '_' + str(rho)
+
+            ARGS = Experiment(npy_path=npy_rho_dir, learning_path=learning_path, filename=filename)
+
+            features_select_37(ARGS)
+
+

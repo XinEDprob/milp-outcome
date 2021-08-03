@@ -13,7 +13,9 @@ from collections import OrderedDict
 import datetime
 import shared
 import utilities
-
+import sys
+import time
+import os
 
 """
 Run as
@@ -96,25 +98,27 @@ Parser definition.
 """
 
 class Experiment:
-    def __init__(self, instance='air04.mps.gz', seed=201610271, dataset='Benchmark78', time_limit=7200):
+    def __init__(self, instance='air04.mps.gz', seed=201610271, dataset='Benchmark78', time_limit=7200, rho=5,
+                 node_limit=6000, label_time=1200, label=1, trivial=False, sol_time = 1000):
         self.instance = instance
         self.seed = seed
         self.dataset = dataset
         self.time_limit = time_limit
-        self.node_limit = 6000
+        self.node_limit = node_limit
         # self.tls = [1200., 2400., 3600., 7200.]
-        self.rho = 10
-        self.label_time = 1200
+        self.rho = rho
+        self.label_time = label_time
         # for storing data
-        self.label = 1
-        self.trivial = 0
-        self.tau = 120
-        self.sol_time = 459
+        self.label = label
+        self.trivial = trivial
+        self.tau = self.rho*self.label_time/100
+        self.sol_time = sol_time
         self.data_path = shared.DATA_PATH
         self.inst_path = shared.INST_PATH
 
-# ARGS = Experiment(instance='app1-2.mps')
-ARGS = Experiment()
+
+
+# ARGS = Experiment()
 
 """
 Custom classes definition.
@@ -135,59 +139,24 @@ class GlobalCBCount:
         return self.__cb_count
 
 
-class UserNodeIndex:
-    """
-    A class setting a global counter as unique index to each created node.
-    """
-    __index = -1  # so that root has index 0
-
-    def __init__(self):
-        UserNodeIndex.__index += 1
-        self.__node_index = UserNodeIndex.__index
-
-    def get_node_index(self):
-        return self.__node_index
-
-
-class UserNodeData:
-    """
-    A class defining a custom data-handle for nodes in the B&B tree.
-    """
-    def __init__(self, user_index, user_depth, user_parent_id, user_parent_index):
-        self.user_index = user_index  # UserNodeIndex counter
-        self.user_depth = user_depth  # depth will be updated recursively from parent to children
-        self.user_parent_id = user_parent_id  # id of parent node
-        self.user_parent_index = user_parent_index  # index of parent node
-
-
 """
 Global definitions.
 """
 
-# global definition of list, which will contain lists of length 31, i.e., the rows of the final array.
-GLOBAL_LIST = list()
 
-# the correct dictionary RHO_TAU_NODES is name_seed.pickle in ARGS.data_path/TIME_NODES_DICT/dataset_seed/
-dict_dir = ARGS.data_path + "/TIME_NODES_DICT/" + ARGS.dataset + "_" + str(ARGS.seed) + "/"
-dict_name = ARGS.instance.split('.')[0] + "_" + str(ARGS.seed) + ".pkl"
+def count_noniteger(nums, model):
+    count = 0
+    for i in range(len(nums)):
+        if not nums[i].is_integer() and (model._vars[i].VType == 'I' or model._vars[i].VType == 'B'):
+            count += 1
+    return count
 
-with open(os.path.join(dict_dir, dict_name), "rb") as p:
-    RHO_TAU_NODES_DICT = pickle.load(p)
-    nodeCB_FLAGS = OrderedDict()
-    for eta in RHO_TAU_NODES_DICT[ARGS.rho][ARGS.tau]:
-        if eta:  # map only node marks that are not None
-            nodeCB_FLAGS[eta] = False
-p.close()
 
-# additional last NodeCB call at the end of the data collection
-# (not met if node_limit corresponds to final number of nodes)
-nodeCB_FLAGS[ARGS.node_limit] = False
-
-# global instance of UserNodeData for the root node
-root = UserNodeIndex()
-print("\tRoot index is: {}".format(root.get_node_index()))
-root_user_data = UserNodeData(user_index=root.get_node_index(), user_depth=0, user_parent_id=-1,
-                              user_parent_index=None)
+def node_obj(nums, model):
+    obj = 0
+    for i in range(len(nums)):
+        obj += nums[i]*model._vars[i].Obj
+    return obj
 
 """
 Callbacks definition.
@@ -202,7 +171,7 @@ Callbacks definition.
 # 1. collect the obj. of the unexplored nodes
 # 2. number of cuts for different category
 
-#
+
 def data_run_callback(model, where):
         global nodeCB_FLAGS
         global GLOBAL_LIST
@@ -224,7 +193,7 @@ def data_run_callback(model, where):
                                          model.cbGet(GRB.Callback.MIP_CUTCNT), model.cbGet(GRB.Callback.MIP_NODLFT),
                                          model.cbGet(GRB.Callback.MIP_ITRCNT)])
 
-                    node_cb_list.extend([None] * 10)
+                    node_cb_list.extend([None] * 12)
 
                     GLOBAL_LIST.append(node_cb_list)
                     break
@@ -240,6 +209,15 @@ def data_run_callback(model, where):
                 branch_cb_list.extend([model.cbGet(GRB.Callback.MIPNODE_STATUS), model.cbGet(GRB.Callback.MIPNODE_OBJBST),
                                        model.cbGet(GRB.Callback.MIPNODE_OBJBND), model.cbGet(GRB.Callback.MIPNODE_NODCNT),
                                        model.cbGet(GRB.Callback.MIPNODE_SOLCNT)])
+                # number of non-integer iinf
+                if model.cbGet(GRB.Callback.MIPNODE_STATUS) == 2:
+                    Nnint = count_noniteger(model.cbGetNodeRel(model._vars), model)
+                else:
+                    Nnint = None
+                branch_cb_list.append(Nnint)
+                # obj of the relaxation solution on current node
+                MIPNODE_OBJ = node_obj(model.cbGetNodeRel(model._vars), model)
+                branch_cb_list.append(MIPNODE_OBJ)
                 branch_cb_list.extend([None] * 5)
                 GLOBAL_LIST.append(branch_cb_list)
 
@@ -248,19 +226,17 @@ def data_run_callback(model, where):
             sol_cb_list.append(gcb.get_cb_count())
             sol_cb_list.extend([model.cbGet(GRB.Callback.RUNTIME)])
 
-            sol_cb_list.extend([None] * 12)
+            sol_cb_list.extend([None] * 14)
             # 5 features from MIPSOL callback
             sol_cb_list.extend([model.cbGet(GRB.Callback.MIPSOL_OBJ), model.cbGet(GRB.Callback.MIPSOL_OBJBST),
                                 model.cbGet(GRB.Callback.MIPSOL_OBJBND), model.cbGet(GRB.Callback.MIPSOL_NODCNT),
                                 model.cbGet(GRB.Callback.MIPSOL_SOLCNT)])
             GLOBAL_LIST.append(sol_cb_list)
 
-if __name__ == "__main__":
 
-    import sys
-    import time
-    import os
-
+def run_data_run(ARGS):
+    global nodeCB_FLAGS
+    global GLOBAL_LIST
     name = ARGS.instance.split('.')[0]
     inst_name_info = name + '_' + str(ARGS.seed) + '_' + str(ARGS.label_time) + '_' + str(ARGS.tau) + '_' + str(ARGS.rho)
 
@@ -289,6 +265,7 @@ if __name__ == "__main__":
     try:
         t0 = datetime.datetime.now()
         print("\nInitial time-stamps: {} ".format(t0))
+        pb._vars = pb.getVars()
         pb.optimize(data_run_callback)
         elapsed = datetime.datetime.now() - t0
         status = pb.Status
@@ -322,7 +299,7 @@ if __name__ == "__main__":
     print("Array shape is: ", global_arr.shape)
 
     # use np.savez to save into inst_name_info:
-    npy_rho_dir = ARGS.data_path + '/NPY_RHO_' + str(int(ARGS.rho)) + '/' + ARGS.dataset + '_' + str(ARGS.seed) + '/'
+    npy_rho_dir = ARGS.data_path + 'NPY_RHO_' + str(int(ARGS.rho)) + '/' + ARGS.dataset + '_' + str(ARGS.seed) + '/'
     try:
         os.mkdir(npy_rho_dir)
     except OSError:
@@ -345,3 +322,43 @@ if __name__ == "__main__":
         sol_time=ARGS.sol_time,
         data_final_info=final_info,
     )
+
+
+if __name__ == '__main__':
+
+    rhos = [5, 10, 15, 20, 25]
+    # rhos = [5]
+    dataset = 'Benchmark78'
+    seed = 201610271
+    for rho in rhos:
+        file_name = str(int(rho)) + '_' + dataset + '_' + str(seed)
+        info_file = os.path.join(shared.DATA_PATH + "/RUNS_INFO/", file_name + '.txt')
+        with open(info_file, 'r') as f:
+            params = f.read().split('\n')
+            for param in params[1:-1]:
+                param = param.split('\t')
+
+                ARGS = Experiment(instance=param[0] + '.mps.gz', seed=seed, dataset=dataset, time_limit=7200, rho=int(param[2]),
+                                  label_time=float(param[3]), node_limit=float(param[5]), label=int(param[7]), trivial=param[8],
+                                  sol_time=float(param[10]))
+
+                # global definition of list, which will contain lists of length 31, i.e., the rows of the final array.
+                GLOBAL_LIST = list()
+
+                # the correct dictionary RHO_TAU_NODES is name_seed.pickle in ARGS.data_path/TIME_NODES_DICT/dataset_seed/
+                dict_dir = ARGS.data_path + "/TIME_NODES_DICT/" + ARGS.dataset + "_" + str(ARGS.seed) + "/"
+                dict_name = ARGS.instance.split('.')[0] + "_" + str(ARGS.seed) + ".pkl"
+
+                with open(os.path.join(dict_dir, dict_name), "rb") as p:
+                    RHO_TAU_NODES_DICT = pickle.load(p)
+                    nodeCB_FLAGS = OrderedDict()
+                    for eta in RHO_TAU_NODES_DICT[ARGS.rho][ARGS.tau]:
+                        if eta:  # map only node marks that are not None
+                            nodeCB_FLAGS[eta] = False
+                p.close()
+
+                # additional last NodeCB call at the end of the data collection
+                # (not met if node_limit corresponds to final number of nodes)
+                nodeCB_FLAGS[ARGS.node_limit] = False
+
+                run_data_run(ARGS)

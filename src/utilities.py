@@ -96,7 +96,7 @@ def set_solver_data_run_parameters(c, args):
     # node, time and memory limits
     c.setParam("TimeLimit", args.time_limit)
     # c.parameters.timelimit.set(args.time_limit)
-    c.setParam("NodeLimit", args.time_limit)
+    c.setParam("NodeLimit", args.node_limit)
     # c.parameters.mip.limits.nodes.set(args.node_limit)  # sets the maximum number of nodes *solved* (processed)
     # c.parameters.mip.limits.treememory.set(10000)  # 10GB (10000 MB)
 
